@@ -40,9 +40,9 @@ int total_pending_orders = 0;
 
 //--- Cache variables for performance optimization
 double last_bid = 0, last_ask = 0;
-datetime last_price_update = 0;
-datetime last_count_update = 0;
-datetime last_gui_update = 0;
+uint last_price_update = 0;
+uint last_count_update = 0;
+uint last_gui_update = 0;
 
 //--- Optimized price update threshold (milliseconds)
 #define PRICE_UPDATE_THRESHOLD 50
@@ -55,6 +55,7 @@ int symbol_digits;
 double symbol_tick_value;
 double symbol_min_lot;
 double symbol_max_lot;
+double symbol_lot_step;
 int symbol_stops_level;
 
 //--- GUI Objects
@@ -136,6 +137,19 @@ struct TradeGroup
 //--- Global array to track active trade groups
 TradeGroup active_groups[];
 int active_group_count = 0;
+
+//--- Pending BE cache for positions without TP
+struct PendingBETicket
+{
+   ulong ticket;
+   double entry_price;
+   TRADE_DIRECTION direction;
+   datetime created_time;
+   bool has_tp1;  // Which TP this ticket should use
+};
+
+PendingBETicket pending_be_cache[];
+int pending_be_count = 0;
 
 //+------------------------------------------------------------------+
 //| Calculate Responsive Layout Dimensions                           |
@@ -260,7 +274,30 @@ int OnInit()
    symbol_tick_value = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_VALUE);
    symbol_min_lot = SymbolInfoDouble(current_symbol, SYMBOL_VOLUME_MIN);
    symbol_max_lot = SymbolInfoDouble(current_symbol, SYMBOL_VOLUME_MAX);
+   symbol_lot_step = SymbolInfoDouble(current_symbol, SYMBOL_VOLUME_STEP);
    symbol_stops_level = (int)SymbolInfoInteger(current_symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   
+   // Validate critical symbol properties
+   if(symbol_point <= 0)
+   {
+      Print("[CRITICAL ERROR] Invalid SYMBOL_POINT: ", symbol_point);
+      return INIT_FAILED;
+   }
+   if(symbol_min_lot <= 0 || symbol_max_lot <= 0 || symbol_min_lot > symbol_max_lot)
+   {
+      Print("[CRITICAL ERROR] Invalid lot range. Min: ", symbol_min_lot, " Max: ", symbol_max_lot);
+      return INIT_FAILED;
+   }
+   if(symbol_lot_step <= 0)
+   {
+      Print("[WARNING] Invalid SYMBOL_VOLUME_STEP: ", symbol_lot_step, ". Using 0.01 as default.");
+      symbol_lot_step = 0.01;
+   }
+   if(symbol_tick_value <= 0)
+   {
+      Print("[WARNING] Invalid SYMBOL_TRADE_TICK_VALUE: ", symbol_tick_value, ". Using 1.0 as fallback.");
+      symbol_tick_value = 1.0;
+   }
 
    //--- Initialize current prices with validation
    ResetLastError();
@@ -283,6 +320,9 @@ int OnInit()
 
    last_bid = current_bid;
    last_ask = current_ask;
+   last_price_update = GetTickCount();
+   last_count_update = GetTickCount();
+   last_gui_update = GetTickCount();
 
    //--- Set up trade object with optimized settings
    ResetLastError();
@@ -329,7 +369,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   datetime current_time = TimeCurrent();
+   uint current_time = GetTickCount();
 
    //--- Optimized price updates with caching
    if(current_time - last_price_update > PRICE_UPDATE_THRESHOLD)
@@ -364,10 +404,11 @@ void OnTick()
    }
    
    //--- Periodic cleanup of closed groups
-   static datetime last_cleanup = 0;
+   static uint last_cleanup = 0;
    if(current_time - last_cleanup > 60000) // Every 60 seconds
    {
       RemoveClosedGroups();
+      CheckPendingBECache();
       last_cleanup = current_time;
    }
 }
@@ -381,11 +422,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 {
    // Handle multiple transaction types
    
-   // TYPE 1: Pending order activated (converted to position)
-   if(trans.type == TRADE_TRANSACTION_ORDER_ADD)
+   // TYPE 1: Position/Order modification (SL/TP changed)
+   if(trans.type == TRADE_TRANSACTION_ORDER_UPDATE)
    {
-      // TODO: Track pending orders when they're created
-      // For now, we track them when they convert to positions
+      // Check if TP was added to a position in pending BE cache
+      CheckTPAddedToCache(trans.order);
    }
    
    // TYPE 2: Deal added (position opened or closed)
@@ -421,11 +462,17 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       // Case A: Position ENTRY (from pending order activation)
       if(deal_entry == DEAL_ENTRY_IN)
       {
-         // This is a pending order that just got activated
-         // Note: We need to implement group creation for pending orders here
-         // For now, just log it
-         Print("Position opened from pending order. Ticket: ", position_id);
-         // TODO: Create trade group for pending orders
+         // Check if this position has TP set
+         ResetLastError();
+         if(PositionSelectByTicket(position_id))
+         {
+            double tp = PositionGetDouble(POSITION_TP);
+            if(tp == 0)
+            {
+               Print("[INFO] Position ", position_id, " opened without TP. Adding to pending BE cache.");
+               // Will be handled by pending BE cache system
+            }
+         }
       }
       
       // Case B: Position CLOSE (TP or SL hit)
@@ -728,6 +775,29 @@ double NormalizePrice(double price, string symbol = "")
 }
 
 //+------------------------------------------------------------------+
+//| Normalize Lot Size to Symbol Requirements                         |
+//+------------------------------------------------------------------+
+double NormalizeLotSize(double lot_size)
+{
+   if(lot_size <= 0)
+      return 0.0;
+   
+   // Round to lot step
+   if(symbol_lot_step > 0)
+   {
+      lot_size = MathRound(lot_size / symbol_lot_step) * symbol_lot_step;
+   }
+   
+   // Clamp to min/max
+   if(lot_size < symbol_min_lot)
+      lot_size = symbol_min_lot;
+   if(lot_size > symbol_max_lot)
+      lot_size = symbol_max_lot;
+   
+   return lot_size;
+}
+
+//+------------------------------------------------------------------+
 //| Calculate Adjusted Lot Size with Half Risk (Optimized)           |
 //+------------------------------------------------------------------+
 double CalculateAdjustedLotSize(double base_lot_size)
@@ -736,7 +806,10 @@ double CalculateAdjustedLotSize(double base_lot_size)
    if(base_lot_size <= 0)
       return 0.0;
 
-   return half_risk_enabled ? base_lot_size / 2.0 : base_lot_size;
+   double adjusted = half_risk_enabled ? base_lot_size / 2.0 : base_lot_size;
+   
+   // Normalize to symbol requirements
+   return NormalizeLotSize(adjusted);
 }
 
 //+------------------------------------------------------------------+
@@ -1157,6 +1230,40 @@ void ExecuteTrades()
       UpdateStatus("Max positions exceeded", clrRed);
       return;
    }
+   
+   //--- Check broker limits
+   int account_limit = (int)AccountInfoInteger(ACCOUNT_LIMIT_ORDERS);
+   if(account_limit > 0 && current_total + num_trades > account_limit)
+   {
+      UpdateStatus("Broker order limit exceeded", clrRed);
+      Print("[ERROR] Broker limit: ", account_limit, " | Requested: ", current_total + num_trades);
+      return;
+   }
+   
+   //--- Check margin requirements for market orders
+   if(selected_execution == EXEC_MARKET)
+   {
+      double total_margin_required = 0;
+      ENUM_ORDER_TYPE check_type = (selected_direction == TRADE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double check_price = (selected_direction == TRADE_BUY) ? current_ask : current_bid;
+      
+      ResetLastError();
+      if(!OrderCalcMargin(check_type, current_symbol, adjusted_lot_size * num_trades, check_price, total_margin_required))
+      {
+         int error_code = GetLastError();
+         UpdateStatus("Margin calculation failed", clrRed);
+         Print("[ERROR] OrderCalcMargin failed. Error: ", error_code);
+         return;
+      }
+      
+      double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      if(total_margin_required > free_margin)
+      {
+         UpdateStatus("Insufficient margin", clrRed);
+         Print("[ERROR] Required: $", total_margin_required, " | Available: $", free_margin);
+         return;
+      }
+   }
 
    //--- Get dynamic TP values from GUI (only TP1 and TP2) with normalization
    double tp_prices[2];
@@ -1217,6 +1324,7 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
    int tp1_count = 0;
    int tp2_count = 0;
    double total_entry = 0;
+   int no_tp_count = 0;  // Track positions without TP
 
    for(int i = 0; i < num_trades; i++)
    {
@@ -1256,18 +1364,30 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
          if(PositionSelectByTicket(ticket))
          {
             double actual_entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            double actual_tp = PositionGetDouble(POSITION_TP);
             total_entry += actual_entry;
             
-            // Store ticket in appropriate array based on TP
-            if(tp_index == 0)
+            // Check if TP was actually set
+            if(actual_tp > 0)
             {
-               tp1_tickets[tp1_count] = ticket;
-               tp1_count++;
+               // Store ticket in appropriate array based on TP
+               if(tp_index == 0)
+               {
+                  tp1_tickets[tp1_count] = ticket;
+                  tp1_count++;
+               }
+               else
+               {
+                  tp2_tickets[tp2_count] = ticket;
+                  tp2_count++;
+               }
             }
             else
             {
-               tp2_tickets[tp2_count] = ticket;
-               tp2_count++;
+               // No TP set - add to pending BE cache
+               AddToPendingBECache(ticket, actual_entry, selected_direction, (tp_index == 0));
+               no_tp_count++;
+               Print("[INFO] Trade ", i + 1, " opened without TP. Ticket: ", ticket, " added to pending BE cache.");
             }
          }
          else
@@ -1291,7 +1411,7 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       //--- No delay between trades for instant response
    }
 
-   //--- Create trade group if any trades successful (even partial)
+   //--- Create trade group if any trades successful with TP (even partial)
    if(successful_trades > 0 && tp1_count > 0 && tp2_count > 0)
    {
       // Use average entry price for BE calculation
@@ -1302,10 +1422,17 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       ArrayResize(tp2_tickets, tp2_count);
       
       CreateTradeGroup(avg_entry, tp1_count, tp2_count, tp1_tickets, tp2_tickets);
+      Print("[SUCCESS] Trade group created with ", tp1_count, " TP1 and ", tp2_count, " TP2 positions.");
    }
-   else if(successful_trades > 0 && (tp1_count == 0 || tp2_count == 0))
+   else if(successful_trades > 0 && (tp1_count == 0 || tp2_count == 0) && no_tp_count == 0)
    {
-      Print("WARNING: Partial execution - missing TP1 or TP2 trades. BE tracking disabled.");
+      Print("[WARNING] Partial execution - missing TP1 or TP2 trades. BE tracking disabled.");
+   }
+   
+   // Inform user about pending BE positions
+   if(no_tp_count > 0)
+   {
+      Print("[INFO] ", no_tp_count, " position(s) without TP. Breakeven will activate when TP is added.");
    }
    
    //--- Update status
@@ -1640,7 +1767,10 @@ void CloseAllMyPositions()
             }
             else
             {
-               Print("Failed to close position. Ticket: ", ticket, " Error: ", trade.ResultRetcodeDescription());
+               uint retcode = trade.ResultRetcode();
+               Print("[ERROR] Failed to close position. Ticket: ", ticket);
+               Print("  Retcode: ", retcode, " - ", trade.ResultRetcodeDescription());
+               Print("  Last error: ", GetLastError());
             }
          }
       }
@@ -1683,7 +1813,10 @@ void CancelAllMyPendingOrders()
                }
                else
                {
-                  Print("Failed to cancel pending order. Ticket: ", ticket, " Error: ", trade.ResultRetcodeDescription());
+                  uint retcode = trade.ResultRetcode();
+                  Print("[ERROR] Failed to cancel pending order. Ticket: ", ticket);
+                  Print("  Retcode: ", retcode, " - ", trade.ResultRetcodeDescription());
+                  Print("  Last error: ", GetLastError());
                }
             }
          }
@@ -1931,6 +2064,199 @@ void RemoveClosedGroups()
          
          active_group_count--;
          ArrayResize(active_groups, active_group_count);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Add Ticket to Pending BE Cache                                   |
+//+------------------------------------------------------------------+
+void AddToPendingBECache(ulong ticket, double entry, TRADE_DIRECTION dir, bool is_tp1)
+{
+   // Check if ticket already exists
+   for(int i = 0; i < pending_be_count; i++)
+   {
+      if(pending_be_cache[i].ticket == ticket)
+      {
+         Print("[WARNING] Ticket ", ticket, " already in pending BE cache.");
+         return;
+      }
+   }
+   
+   // Resize array
+   ResetLastError();
+   int resize_result = ArrayResize(pending_be_cache, pending_be_count + 1);
+   if(resize_result < 0)
+   {
+      int error_code = GetLastError();
+      Print("[ERROR] Failed to resize pending_be_cache. Error: ", error_code);
+      return;
+   }
+   
+   // Add new entry
+   pending_be_cache[pending_be_count].ticket = ticket;
+   pending_be_cache[pending_be_count].entry_price = entry;
+   pending_be_cache[pending_be_count].direction = dir;
+   pending_be_cache[pending_be_count].created_time = TimeCurrent();
+   pending_be_cache[pending_be_count].has_tp1 = is_tp1;
+   
+   pending_be_count++;
+   
+   Print("[INFO] Added ticket ", ticket, " to pending BE cache. Total cached: ", pending_be_count);
+}
+
+//+------------------------------------------------------------------+
+//| Check if TP Added to Cached Position                            |
+//+------------------------------------------------------------------+
+void CheckTPAddedToCache(ulong ticket)
+{
+   // Find ticket in cache
+   int cache_index = -1;
+   for(int i = 0; i < pending_be_count; i++)
+   {
+      if(pending_be_cache[i].ticket == ticket)
+      {
+         cache_index = i;
+         break;
+      }
+   }
+   
+   if(cache_index < 0)
+      return;  // Not in cache
+   
+   // Check if position now has TP
+   ResetLastError();
+   if(!PositionSelectByTicket(ticket))
+   {
+      // Position closed - remove from cache
+      RemoveFromPendingBECache(cache_index);
+      return;
+   }
+   
+   double tp = PositionGetDouble(POSITION_TP);
+   if(tp > 0)
+   {
+      // TP added! Activate BE tracking
+      Print("[SUCCESS] TP detected for ticket ", ticket, ". Activating breakeven tracking.");
+      
+      // Try to find or create appropriate group
+      ActivateBEForCachedTicket(cache_index);
+      
+      // Remove from cache
+      RemoveFromPendingBECache(cache_index);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Activate BE for Cached Ticket                                    |
+//+------------------------------------------------------------------+
+void ActivateBEForCachedTicket(int cache_index)
+{
+   if(cache_index < 0 || cache_index >= pending_be_count)
+      return;
+   
+   ulong ticket = pending_be_cache[cache_index].ticket;
+   double entry = pending_be_cache[cache_index].entry_price;
+   bool is_tp1 = pending_be_cache[cache_index].has_tp1;
+   
+   // Look for existing group with matching entry price (within tolerance)
+   double tolerance = 10 * symbol_point;
+   int matching_group = -1;
+   
+   for(int i = 0; i < active_group_count; i++)
+   {
+      if(MathAbs(active_groups[i].entry_price - entry) < tolerance)
+      {
+         matching_group = i;
+         break;
+      }
+   }
+   
+   if(matching_group >= 0)
+   {
+      // Add to existing group
+      if(is_tp1)
+      {
+         int tp1_size = ArraySize(active_groups[matching_group].tp1_tickets);
+         ArrayResize(active_groups[matching_group].tp1_tickets, tp1_size + 1);
+         active_groups[matching_group].tp1_tickets[tp1_size] = ticket;
+      }
+      else
+      {
+         int tp2_size = ArraySize(active_groups[matching_group].tp2_tickets);
+         ArrayResize(active_groups[matching_group].tp2_tickets, tp2_size + 1);
+         active_groups[matching_group].tp2_tickets[tp2_size] = ticket;
+      }
+      
+      active_groups[matching_group].total_trades++;
+      Print("[INFO] Added ticket ", ticket, " to existing group: ", active_groups[matching_group].group_id);
+   }
+   else
+   {
+      // Create new group with single ticket
+      ulong tp1_array[1];
+      ulong tp2_array[1];
+      
+      if(is_tp1)
+      {
+         tp1_array[0] = ticket;
+         CreateTradeGroup(entry, 1, 0, tp1_array, tp2_array);
+         Print("[INFO] Created new group for TP1 ticket: ", ticket);
+      }
+      else
+      {
+         tp2_array[0] = ticket;
+         CreateTradeGroup(entry, 0, 1, tp1_array, tp2_array);
+         Print("[INFO] Created new group for TP2 ticket: ", ticket);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Remove from Pending BE Cache                                     |
+//+------------------------------------------------------------------+
+void RemoveFromPendingBECache(int index)
+{
+   if(index < 0 || index >= pending_be_count)
+      return;
+   
+   Print("[INFO] Removing ticket ", pending_be_cache[index].ticket, " from pending BE cache.");
+   
+   // Shift array elements
+   for(int i = index; i < pending_be_count - 1; i++)
+   {
+      pending_be_cache[i] = pending_be_cache[i + 1];
+   }
+   
+   pending_be_count--;
+   ArrayResize(pending_be_cache, pending_be_count);
+}
+
+//+------------------------------------------------------------------+
+//| Check Pending BE Cache for TP Updates                           |
+//+------------------------------------------------------------------+
+void CheckPendingBECache()
+{
+   for(int i = pending_be_count - 1; i >= 0; i--)
+   {
+      ulong ticket = pending_be_cache[i].ticket;
+      
+      // Check if position still exists
+      ResetLastError();
+      if(!PositionSelectByTicket(ticket))
+      {
+         // Position closed - remove from cache
+         RemoveFromPendingBECache(i);
+         continue;
+      }
+      
+      // Check if TP was added
+      double tp = PositionGetDouble(POSITION_TP);
+      if(tp > 0)
+      {
+         Print("[SUCCESS] TP detected for cached ticket ", ticket, " during periodic check.");
+         ActivateBEForCachedTicket(i);
+         RemoveFromPendingBECache(i);
       }
    }
 }
