@@ -624,7 +624,7 @@ bool CreatePanel()
    ObjectSetInteger(0, panel_name, OBJPROP_WIDTH, 2);
    
    //--- Title label
-   CreateLabel("label_title", "Multi-Trade Manager v1.1", ScalePos(10), ScalePos(10), clrDarkBlue, title_font_size);
+   CreateLabel("label_title", "Multi-Trade Manager v1.2", ScalePos(10), ScalePos(10), clrDarkBlue, title_font_size);
 
    //--- Current symbol label
    CreateLabel("label_symbol", "Symbol: " + current_symbol, ScalePos(10), ScalePos(35), clrBlack, font_size);
@@ -1319,8 +1319,8 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
    // Arrays to track tickets for group creation
    ulong tp1_tickets[];
    ulong tp2_tickets[];
-   ArrayResize(tp1_tickets, num_trades / 2);
-   ArrayResize(tp2_tickets, num_trades / 2);
+   ArrayResize(tp1_tickets, num_trades);
+   ArrayResize(tp2_tickets, num_trades);
    int tp1_count = 0;
    int tp2_count = 0;
    double total_entry = 0;
@@ -1356,9 +1356,23 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       {
          successful_trades++;
          
-         // CRITICAL FIX: Use ResultOrder to get position ticket, not ResultDeal!
-         ulong ticket = trade.ResultOrder();
-         
+         // Retrieve position ticket in a way that works for hedging and netting accounts
+         ulong ticket = 0;
+
+         ulong deal_id = trade.ResultDeal();
+         if(deal_id > 0 && HistoryDealSelect(deal_id))
+            ticket = (ulong)HistoryDealGetInteger(deal_id, DEAL_POSITION_ID);
+
+         if(ticket == 0)
+            ticket = trade.ResultOrder();
+
+         if(ticket == 0)
+         {
+            Print("[WARNING] Unable to determine position ticket for trade ", i + 1,
+                  ". Order: ", trade.ResultOrder(), " Deal: ", trade.ResultDeal());
+            continue;
+         }
+
          // Verify position was opened and get actual entry price
          ResetLastError();
          if(PositionSelectByTicket(ticket))
@@ -1492,7 +1506,7 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
       //--- Place pending order based on type
       string comment = comment_prefix + IntegerToString(i + 1);
       string tp_used = (tp_index == 0) ? "TP1" : "TP2";
-      bool result = trade.OrderOpen(current_symbol, order_type, lot_size, 0, open_price, sl_price, tp_for_trade,
+      bool result = trade.OrderOpen(current_symbol, order_type, lot_size, open_price, 0.0, sl_price, tp_for_trade,
                                    ORDER_TIME_SPECIFIED, Order_Expiration, comment);
 
       if(result)
@@ -1843,13 +1857,13 @@ void UpdateStatus(string status, color clr)
    ObjectSetInteger(0, label_status_name, OBJPROP_COLOR, clr);
 
    //--- Force immediate GUI update for important status changes
-   static datetime last_status_update = 0;
-   datetime current_time = TimeCurrent();
+   static uint last_status_update = 0;
+   uint now = GetTickCount();
 
-   if(current_time - last_status_update > 100) // Update every 100ms
+   if(now - last_status_update > 100) // Update every ~100ms
    {
       ChartRedraw();
-      last_status_update = current_time;
+      last_status_update = now;
    }
 }
 
