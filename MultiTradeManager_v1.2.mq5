@@ -148,6 +148,9 @@ struct PendingBETicket
    bool has_tp1;  // Which TP this ticket should use
 };
 
+//--- Pending BE cache timeout (24 hours)
+#define PENDING_BE_TIMEOUT 86400
+
 PendingBETicket pending_be_cache[];
 int pending_be_count = 0;
 
@@ -939,7 +942,8 @@ void UpdateLossProfitDisplay()
 
       string edit_tp_field_name = "edit_tp_" + IntegerToString(i + 1);
       string tp_text = ObjectGetString(0, edit_tp_field_name, OBJPROP_TEXT);
-      double tp_price = StringToDouble(tp_text);
+      // FIXED: Normalize TP price for consistency with execution
+      double tp_price = NormalizePrice(StringToDouble(tp_text));
 
       if(tp_price > 0)
       {
@@ -1263,6 +1267,22 @@ void ExecuteTrades()
          Print("[ERROR] Required: $", total_margin_required, " | Available: $", free_margin);
          return;
       }
+      
+      // FIXED: Validate stops level for market orders
+      double min_distance = symbol_stops_level * symbol_point;
+      if(min_distance > 0)
+      {
+         if(sl_price > 0)
+         {
+            double sl_distance = MathAbs(check_price - sl_price);
+            if(sl_distance < min_distance)
+            {
+               UpdateStatus("SL too close to market", clrRed);
+               Print("[ERROR] SL distance: ", sl_distance, " | Min required: ", min_distance);
+               return;
+            }
+         }
+      }
    }
 
    //--- Get dynamic TP values from GUI (only TP1 and TP2) with normalization
@@ -1379,6 +1399,15 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
          {
             double actual_entry = PositionGetDouble(POSITION_PRICE_OPEN);
             double actual_tp = PositionGetDouble(POSITION_TP);
+            int pos_error = GetLastError();
+            
+            // FIXED: Validate position data
+            if(actual_entry <= 0 || pos_error != 0)
+            {
+               Print("[ERROR] Invalid position data for ticket ", ticket, ". Entry=", actual_entry, " Error=", pos_error);
+               continue;
+            }
+            
             total_entry += actual_entry;
             
             // Check if TP was actually set
@@ -1426,7 +1455,8 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
    }
 
    //--- Create trade group if any trades successful with TP (even partial)
-   if(successful_trades > 0 && tp1_count > 0 && tp2_count > 0)
+   // FIXED: Create group even if only TP1 or TP2 exists (partial execution support)
+   if(successful_trades > 0 && (tp1_count > 0 || tp2_count > 0))
    {
       // Use average entry price for BE calculation
       double avg_entry = total_entry / successful_trades;
@@ -1436,11 +1466,23 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       ArrayResize(tp2_tickets, tp2_count);
       
       CreateTradeGroup(avg_entry, tp1_count, tp2_count, tp1_tickets, tp2_tickets);
-      Print("[SUCCESS] Trade group created with ", tp1_count, " TP1 and ", tp2_count, " TP2 positions.");
+      
+      if(tp1_count > 0 && tp2_count > 0)
+      {
+         Print("[SUCCESS] Trade group created with ", tp1_count, " TP1 and ", tp2_count, " TP2 positions.");
+      }
+      else if(tp1_count > 0)
+      {
+         Print("[WARNING] Partial group created with only ", tp1_count, " TP1 position(s). BE will activate when TP1 hits.");
+      }
+      else
+      {
+         Print("[WARNING] Partial group created with only ", tp2_count, " TP2 position(s). No TP1 to trigger BE.");
+      }
    }
-   else if(successful_trades > 0 && (tp1_count == 0 || tp2_count == 0) && no_tp_count == 0)
+   else if(successful_trades > 0 && tp1_count == 0 && tp2_count == 0 && no_tp_count == 0)
    {
-      Print("[WARNING] Partial execution - missing TP1 or TP2 trades. BE tracking disabled.");
+      Print("[WARNING] No positions with TP. BE tracking disabled.");
    }
    
    // Inform user about pending BE positions
@@ -1894,15 +1936,28 @@ string CreateTradeGroup(double entry, int num_tp1, int num_tp2, ulong &tp1_ticke
    active_groups[active_group_count].breakeven_moved = false;
    active_groups[active_group_count].total_trades = num_tp1 + num_tp2;
    
-   // Copy ticket arrays
-   ArrayResize(active_groups[active_group_count].tp1_tickets, num_tp1);
-   ArrayResize(active_groups[active_group_count].tp2_tickets, num_tp2);
+   // Copy ticket arrays (FIXED: Only resize if count > 0)
+   if(num_tp1 > 0)
+   {
+      ArrayResize(active_groups[active_group_count].tp1_tickets, num_tp1);
+      for(int i = 0; i < num_tp1; i++)
+         active_groups[active_group_count].tp1_tickets[i] = tp1_tickets[i];
+   }
+   else
+   {
+      ArrayResize(active_groups[active_group_count].tp1_tickets, 0);
+   }
    
-   for(int i = 0; i < num_tp1; i++)
-      active_groups[active_group_count].tp1_tickets[i] = tp1_tickets[i];
-   
-   for(int i = 0; i < num_tp2; i++)
-      active_groups[active_group_count].tp2_tickets[i] = tp2_tickets[i];
+   if(num_tp2 > 0)
+   {
+      ArrayResize(active_groups[active_group_count].tp2_tickets, num_tp2);
+      for(int i = 0; i < num_tp2; i++)
+         active_groups[active_group_count].tp2_tickets[i] = tp2_tickets[i];
+   }
+   else
+   {
+      ArrayResize(active_groups[active_group_count].tp2_tickets, 0);
+   }
    
    active_group_count++;
    
@@ -1948,10 +2003,11 @@ void MoveGroupToBreakeven(int group_index)
          double current_sl = PositionGetDouble(POSITION_SL);
          ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          
-         // Validate position data
-         if(current_price <= 0)
+         // FIXED: Validate position data with error code check
+         int error_code = GetLastError();
+         if(current_price <= 0 || error_code != 0)
          {
-            Print("[ERROR] Invalid current price for ticket #", ticket, ": ", current_price);
+            Print("[ERROR] Invalid position data for ticket #", ticket, ": Price=", current_price, " Error=", error_code);
             continue;
          }
          
@@ -1966,15 +2022,17 @@ void MoveGroupToBreakeven(int group_index)
          }
          
          // Validate BE price vs position type
+         // FIXED: Improved validation logic for both BUY and SELL
          bool valid_be = false;
          if(pos_type == POSITION_TYPE_BUY)
          {
-            // For BUY: BE must be below current price and above current SL
+            // For BUY: BE must be below current price (profit zone) and above current SL (improvement)
             valid_be = (be_price < current_price) && (current_sl == 0 || be_price > current_sl);
          }
          else  // POSITION_TYPE_SELL
          {
-            // For SELL: BE must be above current price and below current SL
+            // For SELL: BE must be above current price (profit zone) and below current SL (improvement)
+            // When in profit, current price < entry, so BE (entry) > current price
             valid_be = (be_price > current_price) && (current_sl == 0 || be_price < current_sl);
          }
          
@@ -2142,6 +2200,12 @@ void CheckTPAddedToCache(ulong ticket)
    ResetLastError();
    if(!PositionSelectByTicket(ticket))
    {
+      // FIXED: Check error code for better diagnostics
+      int error_code = GetLastError();
+      if(error_code != 0)
+      {
+         Print("[INFO] Position ", ticket, " not found (likely closed). Error: ", error_code);
+      }
       // Position closed - remove from cache
       RemoveFromPendingBECache(cache_index);
       return;
@@ -2251,9 +2315,19 @@ void RemoveFromPendingBECache(int index)
 //+------------------------------------------------------------------+
 void CheckPendingBECache()
 {
+   datetime current_time = TimeCurrent();
+   
    for(int i = pending_be_count - 1; i >= 0; i--)
    {
       ulong ticket = pending_be_cache[i].ticket;
+      
+      // FIXED: Check for timeout (24 hours)
+      if(current_time - pending_be_cache[i].created_time > PENDING_BE_TIMEOUT)
+      {
+         Print("[WARNING] Pending BE cache timeout for ticket ", ticket, ". Removing from cache.");
+         RemoveFromPendingBECache(i);
+         continue;
+      }
       
       // Check if position still exists
       ResetLastError();
