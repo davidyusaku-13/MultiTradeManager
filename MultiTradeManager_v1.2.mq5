@@ -1506,7 +1506,7 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
       //--- Place pending order based on type
       string comment = comment_prefix + IntegerToString(i + 1);
       string tp_used = (tp_index == 0) ? "TP1" : "TP2";
-      bool result = trade.OrderOpen(current_symbol, order_type, lot_size, open_price, 0.0, sl_price, tp_for_trade,
+      bool result = trade.OrderOpen(current_symbol, order_type, lot_size, 0, open_price, sl_price, tp_for_trade,
                                    ORDER_TIME_SPECIFIED, Order_Expiration, comment);
 
       if(result)
