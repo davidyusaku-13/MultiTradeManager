@@ -241,17 +241,20 @@ int ScalePos(int base_position)
 //+------------------------------------------------------------------+
 //| Get Take Profit price for specific trade                         |
 //+------------------------------------------------------------------+
-double GetTakeProfitForTrade(int trade_index, int total_trades)
+double GetTakeProfitForTrade(int trade_index, int total_trades, double &tp_prices[])
 {
    // Handle edge cases first
-   bool tp1_set = (Take_Profit_Price_1 > 0);
-   bool tp2_set = (Take_Profit_Price_2 > 0);
+   double tp1 = tp_prices[0];
+   double tp2 = tp_prices[1];
+   
+   bool tp1_set = (tp1 > 0);
+   bool tp2_set = (tp2 > 0);
    
    // If only one TP is set, use it for all trades
    if(tp1_set && !tp2_set)
-      return Take_Profit_Price_1;
+      return tp1;
    if(!tp1_set && tp2_set)
-      return Take_Profit_Price_2;
+      return tp2;
    
    // If neither TP is set, return 0
    if(!tp1_set && !tp2_set)
@@ -260,13 +263,13 @@ double GetTakeProfitForTrade(int trade_index, int total_trades)
    // Both TPs are set - alternate between them
    // For single trade, prefer TP1
    if(total_trades == 1)
-      return Take_Profit_Price_1;
+      return tp1;
    
    // For multiple trades, alternate: even indices use TP1, odd use TP2
    if(trade_index % 2 == 0)
-      return Take_Profit_Price_1;  // Even indices (0, 2, 4...) use TP1
+      return tp1;  // Even indices (0, 2, 4...) use TP1
    else
-      return Take_Profit_Price_2;  // Odd indices (1, 3, 5...) use TP2
+      return tp2;  // Odd indices (1, 3, 5...) use TP2
 }
 
 //+------------------------------------------------------------------+
@@ -1302,19 +1305,11 @@ void ExecuteTrades()
    tp_prices[0] = NormalizePrice(StringToDouble(ObjectGetString(0, "edit_tp_1", OBJPROP_TEXT)));
    tp_prices[1] = NormalizePrice(StringToDouble(ObjectGetString(0, "edit_tp_2", OBJPROP_TEXT)));
 
-   //--- Validate price levels for all trades (using only TP1 and TP2)
+   //--- Validate price levels for all trades (using same logic as execution)
    for(int i = 0; i < num_trades; i++)
    {
-      // Alternate between TP1 and TP2
-      int tp_index = (i % 2 == 0) ? 0 : 1;  // 0 for TP1, 1 for TP2
-      double tp_for_trade = tp_prices[tp_index];
-
-      // Fallback to other TP if one is not set
-      if(tp_for_trade == 0)
-      {
-         tp_index = (tp_index == 0) ? 1 : 0;  // Try the other TP
-         tp_for_trade = tp_prices[tp_index];
-      }
+      // Use the same function to get TP for consistency
+      double tp_for_trade = GetTakeProfitForTrade(i, num_trades, tp_prices);
 
       if(!ValidatePriceLevels(open_price, sl_price, tp_for_trade, selected_direction, selected_execution))
       {
@@ -1361,13 +1356,13 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
    for(int i = 0; i < num_trades; i++)
    {
       // Get TP for this trade using improved logic
-      double tp_for_trade = GetTakeProfitForTrade(i, num_trades);
+      double tp_for_trade = GetTakeProfitForTrade(i, num_trades, tp_prices);
       
       // Determine which TP index this corresponds to for tracking
       int tp_index = 0;  // Default to TP1
       if(tp_for_trade > 0)
       {
-         if(tp_for_trade == Take_Profit_Price_2)
+         if(tp_for_trade == tp_prices[1])
             tp_index = 1;
          else
             tp_index = 0;
@@ -1555,13 +1550,13 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
    for(int i = 0; i < num_trades; i++)
    {
       // Get TP for this trade using improved logic
-      double tp_for_trade = GetTakeProfitForTrade(i, num_trades);
+      double tp_for_trade = GetTakeProfitForTrade(i, num_trades, tp_prices);
       
       // Determine which TP index this corresponds to for tracking
       int tp_index = 0;  // Default to TP1
       if(tp_for_trade > 0)
       {
-         if(tp_for_trade == Take_Profit_Price_2)
+         if(tp_for_trade == tp_prices[1])
             tp_index = 1;
          else
             tp_index = 0;
@@ -1570,6 +1565,7 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
       //--- Place pending order based on type
       string comment = comment_prefix + IntegerToString(i + 1);
       string tp_used = (tp_index == 0) ? "TP1" : "TP2";
+      
       bool result = trade.OrderOpen(current_symbol, order_type, lot_size, 0, open_price, sl_price, tp_for_trade,
                                    ORDER_TIME_SPECIFIED, Order_Expiration, comment);
 
