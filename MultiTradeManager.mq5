@@ -5,20 +5,20 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.20"
-#property description "Multi-Trade Manager v1.2 - Auto Breakeven & Price Normalization"
+#property version   "1.30"
+#property description "Multi-Trade Manager v1.3 - Flexible Trade Count & Auto Breakeven"
 
 #include <Trade\Trade.mqh>
 
 //--- Input parameters
 input group "=== Trade Parameters ==="
 input ulong Magic_Number = 12345;          // Magic Number for order identification
-input int Number_Of_Trades = 2;            // Number of identical trades to open (must be even: 2, 4, 6, 8, 10)
+input int Number_Of_Trades = 2;            // Number of identical trades to open (1 or more)
 input double Fixed_Lot_Size = 0.02;        // Fixed lot size per trade
 input bool Half_Risk = false;               // Half Risk mode (Yes/No)
 input double Stop_Loss_Price = 0.0;         // Stop Loss price level (0 = no SL)
-input double Take_Profit_Price_1 = 0.0;     // Take Profit for trade 1 (0 = no TP)
-input double Take_Profit_Price_2 = 0.0;     // Take Profit for trade 2 (0 = no TP)
+input double Take_Profit_Price_1 = 0.0;     // Take Profit 1 (primary TP, 0 = no TP)
+input double Take_Profit_Price_2 = 0.0;     // Take Profit 2 (secondary TP, 0 = no TP)
 
 input group "=== Display Settings ==="
 input int Panel_X_Position = 5;          // Panel X position
@@ -27,7 +27,7 @@ input color Panel_Background = clrWhiteSmoke; // Panel background color
 input color Panel_Border = clrDarkBlue;   // Panel border color
 
 input group "=== Safety Settings ==="
-input int Max_Total_Positions = 100;       // Maximum total positions allowed (recommended even number)
+input int Max_Total_Positions = 100;       // Maximum total positions allowed
 input string Trade_Comment = "MultiTrade"; // Comment for trade identification
 input datetime Order_Expiration = D'2025.12.31 23:59:59'; // Pending order expiration
 
@@ -241,9 +241,28 @@ int ScalePos(int base_position)
 //+------------------------------------------------------------------+
 //| Get Take Profit price for specific trade                         |
 //+------------------------------------------------------------------+
-double GetTakeProfitForTrade(int trade_index)
+double GetTakeProfitForTrade(int trade_index, int total_trades)
 {
-   // Alternate between TP1 and TP2 for all trades
+   // Handle edge cases first
+   bool tp1_set = (Take_Profit_Price_1 > 0);
+   bool tp2_set = (Take_Profit_Price_2 > 0);
+   
+   // If only one TP is set, use it for all trades
+   if(tp1_set && !tp2_set)
+      return Take_Profit_Price_1;
+   if(!tp1_set && tp2_set)
+      return Take_Profit_Price_2;
+   
+   // If neither TP is set, return 0
+   if(!tp1_set && !tp2_set)
+      return 0.0;
+   
+   // Both TPs are set - alternate between them
+   // For single trade, prefer TP1
+   if(total_trades == 1)
+      return Take_Profit_Price_1;
+   
+   // For multiple trades, alternate: even indices use TP1, odd use TP2
    if(trade_index % 2 == 0)
       return Take_Profit_Price_1;  // Even indices (0, 2, 4...) use TP1
    else
@@ -353,7 +372,7 @@ int OnInit()
    UpdateLossProfitDisplay();
    UpdateFinalLotDisplay();
 
-   Print("MultiTradeManager EA v1.2 initialized successfully for ", current_symbol);
+   Print("MultiTradeManager EA v1.3 initialized successfully for ", current_symbol);
    return INIT_SUCCEEDED;
 }
 
@@ -364,7 +383,7 @@ void OnDeinit(const int reason)
 {
    //--- Remove all GUI objects
    DeletePanel();
-   Print("MultiTradeManager EA v1.2 deinitialized");
+   Print("MultiTradeManager EA v1.3 deinitialized");
 }
 
 //+------------------------------------------------------------------+
@@ -627,7 +646,7 @@ bool CreatePanel()
    ObjectSetInteger(0, panel_name, OBJPROP_WIDTH, 2);
    
    //--- Title label
-   CreateLabel("label_title", "Multi-Trade Manager v1.2", ScalePos(10), ScalePos(10), clrDarkBlue, title_font_size);
+   CreateLabel("label_title", "Multi-Trade Manager v1.3", ScalePos(10), ScalePos(10), clrDarkBlue, title_font_size);
 
    //--- Current symbol label
    CreateLabel("label_symbol", "Symbol: " + current_symbol, ScalePos(10), ScalePos(35), clrBlack, font_size);
@@ -659,7 +678,7 @@ bool CreatePanel()
    //--- Number of trades
    CreateLabel("label_trades", "Trades:", ScalePos(10), ScalePos(250), clrBlack, font_size);
    CreateEdit(edit_trades_name, IntegerToString(Number_Of_Trades), ScalePos(145), ScalePos(250), edit_width, edit_height);
-   CreateLabel("label_trades_note", "(must be even)", ScalePos(145 + BASE_EDIT_WIDTH + 10), ScalePos(250), clrBlue, font_size - 1);
+   CreateLabel("label_trades_note", "(any number)", ScalePos(145 + BASE_EDIT_WIDTH + 10), ScalePos(250), clrBlue, font_size - 1);
 
    //--- Open price (for pending orders)
    CreateLabel(label_open_price_name, "Open Price:", ScalePos(10), ScalePos(283), clrBlack, font_size);
@@ -1213,17 +1232,10 @@ void ExecuteTrades()
       return;
    }
 
-   //--- Validate number of trades (must be even for TP1/TP2 distribution)
+   //--- Validate number of trades
    if(num_trades <= 0 || num_trades > Max_Total_Positions)
    {
       UpdateStatus("Invalid trade count", clrRed);
-      return;
-   }
-
-   //--- Validate that number of trades is even
-   if(num_trades % 2 != 0)
-   {
-      UpdateStatus("Trade count must be even", clrRed);
       return;
    }
 
@@ -1348,15 +1360,17 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
 
    for(int i = 0; i < num_trades; i++)
    {
-      // Alternate between TP1 and TP2
-      int tp_index = (i % 2 == 0) ? 0 : 1;  // 0 for TP1, 1 for TP2
-      double tp_for_trade = tp_prices[tp_index];
-
-      // Fallback to other TP if one is not set
-      if(tp_for_trade == 0)
+      // Get TP for this trade using improved logic
+      double tp_for_trade = GetTakeProfitForTrade(i, num_trades);
+      
+      // Determine which TP index this corresponds to for tracking
+      int tp_index = 0;  // Default to TP1
+      if(tp_for_trade > 0)
       {
-         tp_index = (tp_index == 0) ? 1 : 0;  // Try the other TP
-         tp_for_trade = tp_prices[tp_index];
+         if(tp_for_trade == Take_Profit_Price_2)
+            tp_index = 1;
+         else
+            tp_index = 0;
       }
 
       bool result = false;
@@ -1473,11 +1487,17 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       }
       else if(tp1_count > 0)
       {
-         Print("[WARNING] Partial group created with only ", tp1_count, " TP1 position(s). BE will activate when TP1 hits.");
+         if(tp1_count == 1 && num_trades == 1)
+            Print("[INFO] Single trade opened with TP. Breakeven will activate when TP hits.");
+         else
+            Print("[WARNING] Partial group created with only ", tp1_count, " TP1 position(s). BE will activate when TP1 hits.");
       }
       else
       {
-         Print("[WARNING] Partial group created with only ", tp2_count, " TP2 position(s). No TP1 to trigger BE.");
+         if(tp2_count == 1 && num_trades == 1)
+            Print("[INFO] Single trade opened with TP. Breakeven will activate when TP hits.");
+         else
+            Print("[WARNING] Partial group created with only ", tp2_count, " TP2 position(s). No TP1 to trigger BE.");
       }
    }
    else if(successful_trades > 0 && tp1_count == 0 && tp2_count == 0 && no_tp_count == 0)
@@ -1534,15 +1554,17 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
 
    for(int i = 0; i < num_trades; i++)
    {
-      // Alternate between TP1 and TP2
-      int tp_index = (i % 2 == 0) ? 0 : 1;  // 0 for TP1, 1 for TP2
-      double tp_for_trade = tp_prices[tp_index];
-
-      // Fallback to other TP if one is not set
-      if(tp_for_trade == 0)
+      // Get TP for this trade using improved logic
+      double tp_for_trade = GetTakeProfitForTrade(i, num_trades);
+      
+      // Determine which TP index this corresponds to for tracking
+      int tp_index = 0;  // Default to TP1
+      if(tp_for_trade > 0)
       {
-         tp_index = (tp_index == 0) ? 1 : 0;  // Try the other TP
-         tp_for_trade = tp_prices[tp_index];
+         if(tp_for_trade == Take_Profit_Price_2)
+            tp_index = 1;
+         else
+            tp_index = 0;
       }
 
       //--- Place pending order based on type
@@ -1609,7 +1631,7 @@ ENUM_ORDER_TYPE GetPendingOrderType(double open_price, TRADE_DIRECTION direction
 }
 
 //+------------------------------------------------------------------+
-//| Validate Trade Number (must be even)                              |
+//| Validate Trade Number                                             |
 //+------------------------------------------------------------------+
 void ValidateTradeNumber()
 {
@@ -1617,10 +1639,10 @@ void ValidateTradeNumber()
    int num_trades = (int)StringToInteger(trades_text);
    if(num_trades <= 0) num_trades = Number_Of_Trades;
 
-   // Check if number is even
-   if(num_trades % 2 != 0)
+   // Validate trade count is positive
+   if(num_trades <= 0)
    {
-      UpdateStatus("Trade count must be even", clrRed);
+      UpdateStatus("Trade count must be positive", clrRed);
    }
    else
    {
