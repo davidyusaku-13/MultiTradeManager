@@ -890,12 +890,23 @@ double CalculateLossAmount(double lot_size, double sl_price, double open_price)
    double price_diff_points = MathAbs(open_price - sl_price) / symbol_point;
    
    // Get proper tick value for loss calculation
-   double tick_value_loss = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
-   if(tick_value_loss == 0)
-      tick_value_loss = symbol_tick_value; // Fallback
-   
-   // Calculate loss amount
-   return lot_size * price_diff_points * tick_value_loss;
+   // Calculate using tick-size / tick-value approach (robust across instruments)
+   double tick_size = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0) tick_size = symbol_point;
+
+   double tick_value = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tick_value <= 0) tick_value = symbol_tick_value; // fallback from OnInit
+
+   // Final fallback: derive approximate tick value from contract size
+   if(tick_value <= 0 && contract_size > 0 && tick_size > 0)
+      tick_value = contract_size * tick_size;
+
+   if(tick_size <= 0 || tick_value <= 0)
+      return 0.0;
+
+   double ticks = MathAbs(open_price - sl_price) / tick_size;
+   double loss = lot_size * ticks * tick_value;
+   return loss;
 }
 
 //+------------------------------------------------------------------+
@@ -913,12 +924,23 @@ double CalculateProfitAmount(double lot_size, double tp_price, double open_price
    double price_diff_points = MathAbs(tp_price - open_price) / symbol_point;
    
    // Get proper tick value for profit calculation
-   double tick_value_profit = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_VALUE_PROFIT);
-   if(tick_value_profit == 0)
-      tick_value_profit = symbol_tick_value; // Fallback
-   
-   // Calculate profit amount
-   return lot_size * price_diff_points * tick_value_profit;
+   // Calculate using tick-size / tick-value approach (robust across instruments)
+   double tick_size = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0) tick_size = symbol_point;
+
+   double tick_value = SymbolInfoDouble(current_symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tick_value <= 0) tick_value = symbol_tick_value; // fallback from OnInit
+
+   // Final fallback: derive approximate tick value from contract size
+   if(tick_value <= 0 && contract_size > 0 && tick_size > 0)
+      tick_value = contract_size * tick_size;
+
+   if(tick_size <= 0 || tick_value <= 0)
+      return 0.0;
+
+   double ticks = MathAbs(tp_price - open_price) / tick_size;
+   double profit = lot_size * ticks * tick_value;
+   return profit;
 }
 
 //+------------------------------------------------------------------+
@@ -2080,87 +2102,107 @@ void MoveGroupToBreakeven(int group_index)
    double min_distance = stops_level * symbol_point;
    
    // Move all TP2 tickets to breakeven
+   // Move all open tickets in both TP1 and TP2 lists to breakeven (if valid)
+   int tp1_count = ArraySize(active_groups[group_index].tp1_tickets);
    int tp2_count = ArraySize(active_groups[group_index].tp2_tickets);
-   for(int i = 0; i < tp2_count; i++)
+
+   // Helper lambda-style loop (manual) to process arrays
+   for(int arr = 0; arr < 2; arr++)
    {
-      ulong ticket = active_groups[group_index].tp2_tickets[i];
-      
-      // Check if position still exists
-      ResetLastError();
-      if(PositionSelectByTicket(ticket))
+      int count = (arr == 0) ? tp1_count : tp2_count;
+      for(int j = 0; j < count; j++)
       {
+         ulong ticket = (arr == 0) ? active_groups[group_index].tp1_tickets[j] : active_groups[group_index].tp2_tickets[j];
+
+         // Check if position still exists
+         ResetLastError();
+         if(!PositionSelectByTicket(ticket))
+            continue; // already closed or not selectable
+
          double current_price = PositionGetDouble(POSITION_PRICE_CURRENT);
          double current_tp = PositionGetDouble(POSITION_TP);
          double current_sl = PositionGetDouble(POSITION_SL);
          ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         
-         // FIXED: Validate position data with error code check
+
+         // Validate position data with error code check
          int error_code = GetLastError();
          if(current_price <= 0 || error_code != 0)
          {
             Print("[ERROR] Invalid position data for ticket #", ticket, ": Price=", current_price, " Error=", error_code);
             continue;
          }
-         
+
          // Safety check: Verify BE price distance from current price
          double distance_from_current = MathAbs(be_price - current_price);
-         
          if(distance_from_current < min_distance && min_distance > 0)
          {
-            Print("WARNING: BE price too close to current. Distance: ", distance_from_current, 
+            Print("WARNING: BE price too close to current. Distance: ", distance_from_current,
                   " | Min required: ", min_distance, " | Ticket: ", ticket);
             continue;  // Skip this ticket
          }
-         
+
          // Validate BE price vs position type
-         // FIXED: Improved validation logic for both BUY and SELL
          bool valid_be = false;
          if(pos_type == POSITION_TYPE_BUY)
          {
-            // For BUY: BE must be below current price (profit zone) and above current SL (improvement)
             valid_be = (be_price < current_price) && (current_sl == 0 || be_price > current_sl);
          }
-         else  // POSITION_TYPE_SELL
+         else // SELL
          {
-            // For SELL: BE must be above current price (profit zone) and below current SL (improvement)
-            // When in profit, current price < entry, so BE (entry) > current price
             valid_be = (be_price > current_price) && (current_sl == 0 || be_price < current_sl);
          }
-         
+
          if(!valid_be)
          {
             Print("WARNING: Invalid BE placement. Type: ", EnumToString(pos_type),
                   " | Current: ", current_price, " | BE: ", be_price, " | Current SL: ", current_sl);
             continue;
          }
-         
-         // Modify SL to breakeven, keep TP unchanged
-         ResetLastError();
-         if(trade.PositionModify(ticket, be_price, current_tp))
+
+         // Modify SL to breakeven, keep TP unchanged. Retry once on transient failure.
+         bool modified = false;
+         int attempts = 0;
+         int max_attempts = 2;
+         while(attempts <= max_attempts)
+         {
+            attempts++;
+            ResetLastError();
+            if(trade.PositionModify(ticket, be_price, current_tp))
+            {
+               modified = true;
+               break;
+            }
+            // transient wait before retry
+            PrintFormat("[WARN] PositionModify attempt %d failed for ticket %d. Ret=%d Desc=%s", attempts, ticket, trade.ResultRetcode(), trade.ResultRetcodeDescription());
+            Sleep(50);
+         }
+
+         if(modified)
          {
             moved_count++;
             Print("[OK] Ticket #", ticket, " SL moved to breakeven: ", be_price);
          }
          else
          {
-            int error_code = GetLastError();
-            uint retcode = trade.ResultRetcode();
-            Print("[ERROR] Failed to move ticket #", ticket, " to BE.");
-            Print("  Error code: ", error_code);
-            Print("  Retcode: ", retcode, " - ", trade.ResultRetcodeDescription());
-            Print("  Request: SL=", be_price, " TP=", current_tp);
-            Print("  Current: Price=", current_price, " SL=", current_sl);
+            int err = GetLastError();
+            Print("[ERROR] Failed to move ticket #", ticket, " to BE after retries. LastError=", err, " Ret=", trade.ResultRetcode(), " Desc=", trade.ResultRetcodeDescription());
          }
       }
    }
    
-   // Mark as moved
-   active_groups[group_index].breakeven_moved = true;
-   
-   Print("=== BREAKEVEN ACTIVATED ===");
-   Print("Group: ", active_groups[group_index].group_id);
-   Print("Moved ", moved_count, " position(s) to BE: ", be_price);
-   Print("===========================");
+   // Only mark group as moved if we actually modified at least one position
+   if(moved_count > 0)
+   {
+      active_groups[group_index].breakeven_moved = true;
+      Print("=== BREAKEVEN ACTIVATED ===");
+      Print("Group: ", active_groups[group_index].group_id);
+      Print("Moved ", moved_count, " position(s) to BE: ", be_price);
+      Print("===========================");
+   }
+   else
+   {
+      Print("[INFO] No positions were moved to breakeven for group: ", active_groups[group_index].group_id, ". Will retry later.");
+   }
 }
 
 //+------------------------------------------------------------------+
