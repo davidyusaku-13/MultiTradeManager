@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                      MultiTradeManager_v1.2.mq5|
+//|                                      MultiTradeManager.mq5       |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
@@ -78,6 +78,14 @@ string label_loss_amount_name = "label_loss_amount";
 string label_profit_amounts_name = "label_profit_amounts";
 string label_final_lot_name = "label_final_lot";
 string label_open_price_name = "label_open_price";
+// Unique object prefix (set in OnInit using Magic_Number) to avoid colliding with other EAs/objects
+string object_prefix = "";
+
+// Helper to build the actual object name with prefix
+string OName(string name)
+{
+   return object_prefix + name;
+}
 
 //--- Base panel dimensions (reference for scaling)
 #define BASE_PANEL_WIDTH 400
@@ -279,6 +287,9 @@ int OnInit()
 {
    //--- Calculate responsive layout dimensions first
    CalculateResponsiveLayout();
+
+   //--- Initialize unique object prefix early to tag GUI objects
+   object_prefix = "MTM_" + IntegerToString((int)Magic_Number) + "_";
 
    //--- Initialize Half Risk state
    half_risk_enabled = Half_Risk;
@@ -545,59 +556,59 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(id == CHARTEVENT_OBJECT_CLICK)
    {
       //--- Handle button clicks
-      if(sparam == btn_buy_name)
+      if(sparam == OName(btn_buy_name))
       {
          selected_direction = TRADE_BUY;
          UpdateDirectionButtons();
          UpdateOpenPriceField();
-         ObjectSetInteger(0, btn_buy_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_STATE, false);
          UpdateLossProfitDisplay();
       }
-      else if(sparam == btn_sell_name)
+      else if(sparam == OName(btn_sell_name))
       {
          selected_direction = TRADE_SELL;
          UpdateDirectionButtons();
          UpdateOpenPriceField();
-         ObjectSetInteger(0, btn_sell_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_STATE, false);
          UpdateLossProfitDisplay();
       }
-      else if(sparam == btn_market_name)
+      else if(sparam == OName(btn_market_name))
       {
          selected_execution = EXEC_MARKET;
          UpdateExecutionButtons();
          UpdateOpenPriceVisibility();
-         ObjectSetInteger(0, btn_market_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_STATE, false);
          UpdateLossProfitDisplay();
       }
-      else if(sparam == btn_pending_name)
+      else if(sparam == OName(btn_pending_name))
       {
          selected_execution = EXEC_PENDING;
          UpdateExecutionButtons();
          UpdateOpenPriceVisibility();
          UpdateOpenPriceField();
-         ObjectSetInteger(0, btn_pending_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_STATE, false);
          UpdateLossProfitDisplay();
       }
-      else if(sparam == btn_execute_name)
+      else if(sparam == OName(btn_execute_name))
       {
          ExecuteTrades();
-         ObjectSetInteger(0, btn_execute_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_execute_name), OBJPROP_STATE, false);
       }
-      else if(sparam == btn_close_all_name)
+      else if(sparam == OName(btn_close_all_name))
       {
          CloseAllMyPositions();
-         ObjectSetInteger(0, btn_close_all_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_close_all_name), OBJPROP_STATE, false);
       }
-      else if(sparam == btn_cancel_pending_name)
+      else if(sparam == OName(btn_cancel_pending_name))
       {
          CancelAllMyPendingOrders();
-         ObjectSetInteger(0, btn_cancel_pending_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_cancel_pending_name), OBJPROP_STATE, false);
       }
-      else if(sparam == btn_half_risk_name)
+      else if(sparam == OName(btn_half_risk_name))
       {
          half_risk_enabled = !half_risk_enabled;
          UpdateHalfRiskButton();
-         ObjectSetInteger(0, btn_half_risk_name, OBJPROP_STATE, false);
+         ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_STATE, false);
          // Instant update for Final Lot display
          UpdateFinalLotDisplay();
          // Update loss/profit calculations (can be slightly delayed)
@@ -607,19 +618,19 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(id == CHARTEVENT_OBJECT_ENDEDIT)
    {
       //--- Handle edit field changes
-      if(sparam == edit_trades_name)
+      if(sparam == OName(edit_trades_name))
       {
          ValidateTradeNumber();
          UpdateTPFieldVisibility();
       }
-      else if(sparam == edit_lot_size_name || sparam == edit_sl_name)
+      else if(sparam == OName(edit_lot_size_name) || sparam == OName(edit_sl_name))
       {
          // Instant update for Final Lot when lot size changes
-         if(sparam == edit_lot_size_name)
+         if(sparam == OName(edit_lot_size_name))
             UpdateFinalLotDisplay();
          UpdateLossProfitDisplay();
       }
-      else if(StringFind(sparam, "edit_tp_") >= 0)
+      else if(StringFind(sparam, OName("edit_tp_")) >= 0 || StringFind(sparam, "edit_tp_") >= 0)
       {
          UpdateLossProfitDisplay();
       }
@@ -632,21 +643,24 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 bool CreatePanel()
 {
    //--- Main panel rectangle
-   if(!ObjectCreate(0, panel_name, OBJ_RECTANGLE_LABEL, 0, 0, 0))
+   string pref_panel = object_prefix + panel_name;
+   if(ObjectFind(0, pref_panel) < 0)
    {
-      Print("Failed to create main panel");
-      return false;
+      if(!ObjectCreate(0, pref_panel, OBJ_RECTANGLE_LABEL, 0, 0, 0))
+      {
+         Print("Failed to create main panel: ", pref_panel);
+         return false;
+      }
    }
-   
-   ObjectSetInteger(0, panel_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, panel_name, OBJPROP_XDISTANCE, Panel_X_Position);
-   ObjectSetInteger(0, panel_name, OBJPROP_YDISTANCE, Panel_Y_Position);
-   ObjectSetInteger(0, panel_name, OBJPROP_XSIZE, panel_width);
-   ObjectSetInteger(0, panel_name, OBJPROP_YSIZE, panel_height);
-   ObjectSetInteger(0, panel_name, OBJPROP_BGCOLOR, Panel_Background);
-   ObjectSetInteger(0, panel_name, OBJPROP_BORDER_COLOR, Panel_Border);
-   ObjectSetInteger(0, panel_name, OBJPROP_BORDER_TYPE, BORDER_RAISED);
-   ObjectSetInteger(0, panel_name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, pref_panel, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, pref_panel, OBJPROP_XDISTANCE, Panel_X_Position);
+   ObjectSetInteger(0, pref_panel, OBJPROP_YDISTANCE, Panel_Y_Position);
+   ObjectSetInteger(0, pref_panel, OBJPROP_XSIZE, panel_width);
+   ObjectSetInteger(0, pref_panel, OBJPROP_YSIZE, panel_height);
+   ObjectSetInteger(0, pref_panel, OBJPROP_BGCOLOR, Panel_Background);
+   ObjectSetInteger(0, pref_panel, OBJPROP_BORDER_COLOR, Panel_Border);
+   ObjectSetInteger(0, pref_panel, OBJPROP_BORDER_TYPE, BORDER_RAISED);
+   ObjectSetInteger(0, pref_panel, OBJPROP_WIDTH, 2);
    
    //--- Title label
    CreateLabel("label_title", "Multi-Trade Manager v1.3", ScalePos(10), ScalePos(10), clrDarkBlue, title_font_size);
@@ -739,10 +753,32 @@ bool CreatePanel()
 //+------------------------------------------------------------------+
 void DeletePanel()
 {
-   ObjectsDeleteAll(0, 0, OBJ_RECTANGLE_LABEL);
-   ObjectsDeleteAll(0, 0, OBJ_BUTTON);
-   ObjectsDeleteAll(0, 0, OBJ_EDIT);
-   ObjectsDeleteAll(0, 0, OBJ_LABEL);
+   // Deterministically delete objects created by this EA using known base names
+   string bases[] = {
+      panel_name,
+      "label_title","label_symbol",
+      "label_lot", edit_lot_size_name,
+      "label_half_risk", btn_half_risk_name,
+      label_final_lot_name, "label_final_lot_value",
+      "label_exec_type", btn_market_name, btn_pending_name,
+      "label_direction", btn_buy_name, btn_sell_name,
+      "label_trades", edit_trades_name, "label_trades_note",
+      label_open_price_name, edit_open_price_name,
+      "label_sl", edit_sl_name, "label_sl_amount",
+      "label_tp_header",
+      "label_tp_1", "edit_tp_1", "label_tp_amount_1",
+      "label_tp_2", "edit_tp_2", "label_tp_amount_2",
+      btn_execute_name, btn_close_all_name, btn_cancel_pending_name,
+      label_status_name
+   };
+
+   int total = ArraySize(bases);
+   for(int i = 0; i < total; i++)
+   {
+      string obj = OName(bases[i]);
+   // Try delete; ignore result
+   ObjectDelete(0, obj);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -750,24 +786,26 @@ void DeletePanel()
 //+------------------------------------------------------------------+
 bool CreateLabel(string name, string text, int x, int y, color clr, int label_font_size)
 {
+   string obj_name = object_prefix + name;
    ResetLastError();
-   if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
+   // If object doesn't exist, create it; otherwise update properties
+   if(ObjectFind(0, obj_name) < 0)
    {
-      int error_code = GetLastError();
-      if(error_code != 4200)  // Object already exists
+      if(!ObjectCreate(0, obj_name, OBJ_LABEL, 0, 0, 0))
       {
-         Print("[ERROR] Failed to create label '", name, "'. Error: ", error_code);
+         int error_code = GetLastError();
+         Print("[ERROR] Failed to create label '", obj_name, "'. Error: ", error_code);
+         return false;
       }
-      return false;
    }
 
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, Panel_X_Position + x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, label_font_size);
-   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, obj_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj_name, OBJPROP_XDISTANCE, Panel_X_Position + x);
+   ObjectSetInteger(0, obj_name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
+   ObjectSetString(0, obj_name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, label_font_size);
+   ObjectSetString(0, obj_name, OBJPROP_FONT, "Arial");
 
    return true;
 }
@@ -893,16 +931,16 @@ void UpdateLossProfitDisplay()
       return;
 
    // Get values once for better performance
-   string lot_text = ObjectGetString(0, edit_lot_size_name, OBJPROP_TEXT);
-   string sl_text = ObjectGetString(0, edit_sl_name, OBJPROP_TEXT);
-   string trades_text = ObjectGetString(0, edit_trades_name, OBJPROP_TEXT);
+   string lot_text = ObjectGetString(0, OName(edit_lot_size_name), OBJPROP_TEXT);
+   string sl_text = ObjectGetString(0, OName(edit_sl_name), OBJPROP_TEXT);
+   string trades_text = ObjectGetString(0, OName(edit_trades_name), OBJPROP_TEXT);
 
    double base_lot_size = StringToDouble(lot_text);
    double adjusted_lot_size = CalculateAdjustedLotSize(base_lot_size);
    double sl_price = StringToDouble(sl_text);
 
    // Update final lot display
-   ObjectSetString(0, "label_final_lot_value", OBJPROP_TEXT, DoubleToString(adjusted_lot_size, 2));
+   ObjectSetString(0, OName("label_final_lot_value"), OBJPROP_TEXT, DoubleToString(adjusted_lot_size, 2));
 
    // Calculate and update SL amount
    // Use same reference price logic as TP (Open Price for pending, current for market)
@@ -914,7 +952,7 @@ void UpdateLossProfitDisplay()
       if(selected_execution == EXEC_PENDING)
       {
          // For pending orders, use the Open Price field
-         string open_price_text = ObjectGetString(0, edit_open_price_name, OBJPROP_TEXT);
+         string open_price_text = ObjectGetString(0, OName(edit_open_price_name), OBJPROP_TEXT);
          sl_reference_price = StringToDouble(open_price_text);
          
          // Fallback to current price if open price is invalid
@@ -932,7 +970,7 @@ void UpdateLossProfitDisplay()
       double loss_amount = CalculateLossAmount(adjusted_lot_size, sl_price, sl_reference_price);
       sl_amount_text = "($" + DoubleToString(loss_amount, 2) + ")";
    }
-   ObjectSetString(0, "label_sl_amount", OBJPROP_TEXT, sl_amount_text);
+   ObjectSetString(0, OName("label_sl_amount"), OBJPROP_TEXT, sl_amount_text);
 
    // Calculate and update TP amounts for TP1 and TP2 only
    // Use Open Price field if in PENDING mode, otherwise use current market price
@@ -941,7 +979,7 @@ void UpdateLossProfitDisplay()
    if(selected_execution == EXEC_PENDING)
    {
       // For pending orders, use the Open Price field
-      string open_price_text = ObjectGetString(0, edit_open_price_name, OBJPROP_TEXT);
+   string open_price_text = ObjectGetString(0, OName(edit_open_price_name), OBJPROP_TEXT);
       reference_price = StringToDouble(open_price_text);
       
       // Fallback to current price if open price is invalid
@@ -959,11 +997,11 @@ void UpdateLossProfitDisplay()
    // Update both TP1 and TP2 amount displays
    for(int i = 0; i < 2; i++)
    {
-      string tp_amount_label = "label_tp_amount_" + IntegerToString(i + 1);
+   string tp_amount_label = OName("label_tp_amount_") + IntegerToString(i + 1);
       string tp_amount_text = "($0.00)";
 
       string edit_tp_field_name = "edit_tp_" + IntegerToString(i + 1);
-      string tp_text = ObjectGetString(0, edit_tp_field_name, OBJPROP_TEXT);
+   string tp_text = ObjectGetString(0, OName(edit_tp_field_name), OBJPROP_TEXT);
       // FIXED: Normalize TP price for consistency with execution
       double tp_price = NormalizePrice(StringToDouble(tp_text));
 
@@ -982,18 +1020,18 @@ void UpdateLossProfitDisplay()
 //+------------------------------------------------------------------+
 void UpdateFinalLotDisplay()
 {
-   string lot_text = ObjectGetString(0, edit_lot_size_name, OBJPROP_TEXT);
+   string lot_text = ObjectGetString(0, OName(edit_lot_size_name), OBJPROP_TEXT);
    double base_lot_size = StringToDouble(lot_text);
    double adjusted_lot_size = CalculateAdjustedLotSize(base_lot_size);
 
    // Only update if lot size is valid
    if(adjusted_lot_size > 0)
    {
-      ObjectSetString(0, "label_final_lot_value", OBJPROP_TEXT, DoubleToString(adjusted_lot_size, 2));
+      ObjectSetString(0, OName("label_final_lot_value"), OBJPROP_TEXT, DoubleToString(adjusted_lot_size, 2));
    }
    else
    {
-      ObjectSetString(0, "label_final_lot_value", OBJPROP_TEXT, "0.00");
+      ObjectSetString(0, OName("label_final_lot_value"), OBJPROP_TEXT, "0.00");
    }
 }
 
@@ -1004,17 +1042,17 @@ void UpdateHalfRiskButton()
 {
    if(half_risk_enabled)
    {
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_BGCOLOR, clrLimeGreen);
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_BORDER_COLOR, clrGreen);
-      ObjectSetString(0, btn_half_risk_name, OBJPROP_TEXT, "YES");
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_BGCOLOR, clrLimeGreen);
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_COLOR, clrBlack);
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_BORDER_COLOR, clrGreen);
+     ObjectSetString(0, OName(btn_half_risk_name), OBJPROP_TEXT, "YES");
    }
    else
    {
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_BGCOLOR, clrCrimson);
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn_half_risk_name, OBJPROP_BORDER_COLOR, clrRed);
-      ObjectSetString(0, btn_half_risk_name, OBJPROP_TEXT, "NO");
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_BGCOLOR, clrCrimson);
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_COLOR, clrWhite);
+     ObjectSetInteger(0, OName(btn_half_risk_name), OBJPROP_BORDER_COLOR, clrRed);
+     ObjectSetString(0, OName(btn_half_risk_name), OBJPROP_TEXT, "NO");
    }
 
    // Trigger immediate lot display update
@@ -1044,26 +1082,27 @@ void UpdateTPFieldVisibility()
 //+------------------------------------------------------------------+
 bool CreateButton(string name, string text, int x, int y, int width, int height, color clr)
 {
+   string obj_name = object_prefix + name;
    ResetLastError();
-   if(!ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0))
+   if(ObjectFind(0, obj_name) < 0)
    {
-      int error_code = GetLastError();
-      if(error_code != 4200)  // Object already exists
+      if(!ObjectCreate(0, obj_name, OBJ_BUTTON, 0, 0, 0))
       {
-         Print("[ERROR] Failed to create button '", name, "'. Error: ", error_code);
+         int error_code = GetLastError();
+         Print("[ERROR] Failed to create button '", obj_name, "'. Error: ", error_code);
+         return false;
       }
-      return false;
    }
       
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, Panel_X_Position + x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, obj_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj_name, OBJPROP_XDISTANCE, Panel_X_Position + x);
+   ObjectSetInteger(0, obj_name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
+   ObjectSetInteger(0, obj_name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, obj_name, OBJPROP_YSIZE, height);
+   ObjectSetString(0, obj_name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, obj_name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 9);
    
    return true;
 }
@@ -1073,28 +1112,29 @@ bool CreateButton(string name, string text, int x, int y, int width, int height,
 //+------------------------------------------------------------------+
 bool CreateEdit(string name, string text, int x, int y, int width, int height)
 {
+   string obj_name = object_prefix + name;
    ResetLastError();
-   if(!ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0))
+   if(ObjectFind(0, obj_name) < 0)
    {
-      int error_code = GetLastError();
-      if(error_code != 4200)  // Object already exists
+      if(!ObjectCreate(0, obj_name, OBJ_EDIT, 0, 0, 0))
       {
-         Print("[ERROR] Failed to create edit '", name, "'. Error: ", error_code);
+         int error_code = GetLastError();
+         Print("[ERROR] Failed to create edit '", obj_name, "'. Error: ", error_code);
+         return false;
       }
-      return false;
    }
       
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, Panel_X_Position + x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlack);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clrWhite);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clrGray);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
-   ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_CENTER);
+   ObjectSetInteger(0, obj_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj_name, OBJPROP_XDISTANCE, Panel_X_Position + x);
+   ObjectSetInteger(0, obj_name, OBJPROP_YDISTANCE, Panel_Y_Position + y);
+   ObjectSetInteger(0, obj_name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, obj_name, OBJPROP_YSIZE, height);
+   ObjectSetString(0, obj_name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(0, obj_name, OBJPROP_BGCOLOR, clrWhite);
+   ObjectSetInteger(0, obj_name, OBJPROP_BORDER_COLOR, clrGray);
+   ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, obj_name, OBJPROP_ALIGN, ALIGN_CENTER);
    
    return true;
 }
@@ -1106,23 +1146,23 @@ void UpdateExecutionButtons()
 {
    if(selected_execution == EXEC_MARKET)
    {
-      ObjectSetInteger(0, btn_market_name, OBJPROP_BGCOLOR, clrDodgerBlue);
-      ObjectSetInteger(0, btn_market_name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn_market_name, OBJPROP_BORDER_COLOR, clrBlue);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_BGCOLOR, clrDodgerBlue);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_BORDER_COLOR, clrBlue);
 
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_BGCOLOR, clrWhite);
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_BORDER_COLOR, clrGray);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_BORDER_COLOR, clrGray);
    }
    else
    {
-      ObjectSetInteger(0, btn_market_name, OBJPROP_BGCOLOR, clrWhite);
-      ObjectSetInteger(0, btn_market_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_market_name, OBJPROP_BORDER_COLOR, clrGray);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(btn_market_name), OBJPROP_BORDER_COLOR, clrGray);
 
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_BGCOLOR, clrOrange);
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn_pending_name, OBJPROP_BORDER_COLOR, clrDarkOrange);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_BGCOLOR, clrOrange);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_pending_name), OBJPROP_BORDER_COLOR, clrDarkOrange);
    }
 }
 
@@ -1133,23 +1173,23 @@ void UpdateDirectionButtons()
 {
    if(selected_direction == TRADE_BUY)
    {
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_BGCOLOR, clrLimeGreen);
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_BORDER_COLOR, clrGreen);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_BGCOLOR, clrLimeGreen);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_BORDER_COLOR, clrGreen);
 
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_BGCOLOR, clrWhite);
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_BORDER_COLOR, clrGray);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_BORDER_COLOR, clrGray);
    }
    else
    {
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_BGCOLOR, clrWhite);
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, btn_buy_name, OBJPROP_BORDER_COLOR, clrGray);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(btn_buy_name), OBJPROP_BORDER_COLOR, clrGray);
 
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_BGCOLOR, clrCrimson);
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn_sell_name, OBJPROP_BORDER_COLOR, clrRed);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_BGCOLOR, clrCrimson);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, OName(btn_sell_name), OBJPROP_BORDER_COLOR, clrRed);
    }
 }
 
@@ -1161,18 +1201,18 @@ void UpdateOpenPriceVisibility()
    if(selected_execution == EXEC_MARKET)
    {
       //--- Hide open price field for market execution
-      ObjectSetInteger(0, label_open_price_name, OBJPROP_COLOR, clrLightGray);
-      ObjectSetInteger(0, edit_open_price_name, OBJPROP_BGCOLOR, clrLightGray);
-      ObjectSetInteger(0, edit_open_price_name, OBJPROP_READONLY, true);
-      ObjectSetString(0, edit_open_price_name, OBJPROP_TEXT, "N/A (Market)");
+         ObjectSetInteger(0, OName(label_open_price_name), OBJPROP_COLOR, clrLightGray);
+         ObjectSetInteger(0, OName(edit_open_price_name), OBJPROP_BGCOLOR, clrLightGray);
+         ObjectSetInteger(0, OName(edit_open_price_name), OBJPROP_READONLY, true);
+         ObjectSetString(0, OName(edit_open_price_name), OBJPROP_TEXT, "N/A (Market)");
    }
    else
    {
       //--- Show open price field for pending orders
-      ObjectSetInteger(0, label_open_price_name, OBJPROP_COLOR, clrBlack);
-      ObjectSetInteger(0, edit_open_price_name, OBJPROP_BGCOLOR, clrWhite);
-      ObjectSetInteger(0, edit_open_price_name, OBJPROP_READONLY, false);
-      UpdateOpenPriceField();
+         ObjectSetInteger(0, OName(label_open_price_name), OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, OName(edit_open_price_name), OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetInteger(0, OName(edit_open_price_name), OBJPROP_READONLY, false);
+         UpdateOpenPriceField();
    }
 }
 
@@ -1197,7 +1237,7 @@ void UpdateOpenPriceField()
          suggested_price = current_bid + (50 * symbol_point);
       }
 
-      ObjectSetString(0, edit_open_price_name, OBJPROP_TEXT, DoubleToString(suggested_price, symbol_digits));
+         ObjectSetString(0, OName(edit_open_price_name), OBJPROP_TEXT, DoubleToString(suggested_price, symbol_digits));
    }
 }
 
@@ -1207,11 +1247,19 @@ void UpdateOpenPriceField()
 //+------------------------------------------------------------------+
 void ExecuteTrades()
 {
+   //--- Guard: ensure terminal allows trading
+   if(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) == 0)
+   {
+      UpdateStatus("Trading disabled in terminal", clrRed);
+      Print("[ERROR] Trading not allowed by terminal settings.");
+      return;
+   }
+
    //--- Get parameters from GUI (cached for better performance)
-   string lot_text = ObjectGetString(0, edit_lot_size_name, OBJPROP_TEXT);
-   string trades_text = ObjectGetString(0, edit_trades_name, OBJPROP_TEXT);
-   string open_price_text = ObjectGetString(0, edit_open_price_name, OBJPROP_TEXT);
-   string sl_text = ObjectGetString(0, edit_sl_name, OBJPROP_TEXT);
+   string lot_text = ObjectGetString(0, OName(edit_lot_size_name), OBJPROP_TEXT);
+   string trades_text = ObjectGetString(0, OName(edit_trades_name), OBJPROP_TEXT);
+   string open_price_text = ObjectGetString(0, OName(edit_open_price_name), OBJPROP_TEXT);
+   string sl_text = ObjectGetString(0, OName(edit_sl_name), OBJPROP_TEXT);
 
    double base_lot_size = StringToDouble(lot_text);
    double adjusted_lot_size = CalculateAdjustedLotSize(base_lot_size);
@@ -1302,8 +1350,8 @@ void ExecuteTrades()
 
    //--- Get dynamic TP values from GUI (only TP1 and TP2) with normalization
    double tp_prices[2];
-   tp_prices[0] = NormalizePrice(StringToDouble(ObjectGetString(0, "edit_tp_1", OBJPROP_TEXT)));
-   tp_prices[1] = NormalizePrice(StringToDouble(ObjectGetString(0, "edit_tp_2", OBJPROP_TEXT)));
+   tp_prices[0] = NormalizePrice(StringToDouble(ObjectGetString(0, OName("edit_tp_1"), OBJPROP_TEXT)));
+   tp_prices[1] = NormalizePrice(StringToDouble(ObjectGetString(0, OName("edit_tp_2"), OBJPROP_TEXT)));
 
    //--- Validate price levels for all trades (using same logic as execution)
    for(int i = 0; i < num_trades; i++)
@@ -1346,8 +1394,16 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
    // Arrays to track tickets for group creation
    ulong tp1_tickets[];
    ulong tp2_tickets[];
-   ArrayResize(tp1_tickets, num_trades);
-   ArrayResize(tp2_tickets, num_trades);
+   if(ArrayResize(tp1_tickets, num_trades) < 0)
+   {
+      Print("[ERROR] Failed to allocate tp1_tickets array");
+      return;
+   }
+   if(ArrayResize(tp2_tickets, num_trades) < 0)
+   {
+      Print("[ERROR] Failed to allocate tp2_tickets array");
+      return;
+   }
    int tp1_count = 0;
    int tp2_count = 0;
    double total_entry = 0;
@@ -1372,13 +1428,23 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       string comment = comment_prefix + IntegerToString(i + 1);
       string tp_used = (tp_index == 0) ? "TP1" : "TP2";
 
-      if(selected_direction == TRADE_BUY)
+      // retry loop for transient failures
+      int attempts = 0;
+      int max_attempts = 2;
+      while(attempts <= max_attempts)
       {
-         result = trade.Buy(lot_size, current_symbol, 0, sl_price, tp_for_trade, comment);
-      }
-      else
-      {
-         result = trade.Sell(lot_size, current_symbol, 0, sl_price, tp_for_trade, comment);
+         attempts++;
+         if(selected_direction == TRADE_BUY)
+            result = trade.Buy(lot_size, current_symbol, 0, sl_price, tp_for_trade, comment);
+         else
+            result = trade.Sell(lot_size, current_symbol, 0, sl_price, tp_for_trade, comment);
+
+         if(result)
+            break;
+
+         // log transient failure and retry
+         PrintFormat("[WARN] Trade attempt %d failed (ret=%d desc=%s). Comment=%s", attempts, trade.ResultRetcode(), trade.ResultRetcodeDescription(), comment);
+         Sleep(50);
       }
 
       if(result)
@@ -1453,11 +1519,7 @@ void ExecuteMarketTrades(int num_trades, double lot_size, double sl_price, doubl
       }
       else
       {
-         // Optimized error reporting
-         Print("Market trade ", i + 1, " failed. Error: ", trade.ResultRetcodeDescription(),
-               " Code: ", trade.ResultRetcode(), " Direction: ", direction_str,
-               " Lots: ", lot_size, risk_type, " Ask: ", current_ask, " Bid: ", current_bid,
-               " SL: ", sl_price, " TP: ", tp_for_trade);
+         Print("[ERROR] Market trade ", i + 1, " failed after ", max_attempts + 1, " attempts. Ret=", trade.ResultRetcode(), " Desc=", trade.ResultRetcodeDescription());
       }
 
       //--- No delay between trades for instant response
@@ -1566,10 +1628,22 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
       string comment = comment_prefix + IntegerToString(i + 1);
       string tp_used = (tp_index == 0) ? "TP1" : "TP2";
       
-      bool result = trade.OrderOpen(current_symbol, order_type, lot_size, 0, open_price, sl_price, tp_for_trade,
+      // Retry pending order placement for transient failures
+      bool placed = false;
+      int attempts = 0;
+      int max_attempts = 2;
+      while(attempts <= max_attempts)
+      {
+         attempts++;
+         placed = trade.OrderOpen(current_symbol, order_type, lot_size, 0, open_price, sl_price, tp_for_trade,
                                    ORDER_TIME_SPECIFIED, Order_Expiration, comment);
+         if(placed)
+            break;
+         PrintFormat("[WARN] Pending order attempt %d failed. Ret=%d Desc=%s", attempts, trade.ResultRetcode(), trade.ResultRetcodeDescription());
+         Sleep(50);
+      }
 
-      if(result)
+      if(placed)
       {
          successful_orders++;
          Print("Pending order ", i + 1, " placed successfully. Ticket: ", trade.ResultOrder(),
@@ -1577,8 +1651,7 @@ void ExecutePendingTrades(int num_trades, double lot_size, double open_price, do
       }
       else
       {
-         Print("Pending order ", i + 1, " failed. Type: ", order_type_str, " Error: ",
-               trade.ResultRetcodeDescription(), " Code: ", trade.ResultRetcode());
+         Print("[ERROR] Pending order ", i + 1, " failed after retries. Type: ", order_type_str, " Ret=", trade.ResultRetcode(), " Desc=", trade.ResultRetcodeDescription());
       }
 
       //--- No delay between orders for instant response
@@ -1631,7 +1704,7 @@ ENUM_ORDER_TYPE GetPendingOrderType(double open_price, TRADE_DIRECTION direction
 //+------------------------------------------------------------------+
 void ValidateTradeNumber()
 {
-   string trades_text = ObjectGetString(0, edit_trades_name, OBJPROP_TEXT);
+   string trades_text = ObjectGetString(0, OName(edit_trades_name), OBJPROP_TEXT);
    int num_trades = (int)StringToInteger(trades_text);
    if(num_trades <= 0) num_trades = Number_Of_Trades;
 
@@ -1913,10 +1986,10 @@ void CancelAllMyPendingOrders()
 void UpdateStatus(string status, color clr)
 {
    //--- Optimized status update with minimal object calls
-   ObjectSetString(0, label_status_name, OBJPROP_TEXT, status);
-   ObjectSetInteger(0, label_status_name, OBJPROP_COLOR, clr);
+   ObjectSetString(0, OName(label_status_name), OBJPROP_TEXT, status);
+   ObjectSetInteger(0, OName(label_status_name), OBJPROP_COLOR, clr);
 
-   //--- Force immediate GUI update for important status changes
+   string trades_text = ObjectGetString(0, OName(edit_trades_name), OBJPROP_TEXT);
    static uint last_status_update = 0;
    uint now = GetTickCount();
 
